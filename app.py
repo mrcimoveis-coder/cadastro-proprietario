@@ -154,7 +154,7 @@ def gerar_pdf_ficha_proprietario(dados: dict) -> bytes:
             "Cargo na Empresa": dados.get("socio_cargo")
         }
 
-    elements.append(Paragraph("1. Identificação do Proprietário (Locador)", style_section))
+    elements.append(Paragraph("1. Identificação do Proprietário (Locador/Vendedor)", style_section))
     elements.append(montar_tabela(sec1))
     elements.append(Spacer(1, 8))
 
@@ -182,7 +182,7 @@ def gerar_pdf_ficha_proprietario(dados: dict) -> bytes:
         "Matrícula RGI / Cartório": dados.get("matricula_rgi"),
         "Inscrição IPTU": dados.get("inscricao_iptu"),
         "Área Privativa (m²)": dados.get("area_m2"),
-        "Características": f"{dados.get('qtd_quartos')} quarto(s) | {dados.get('qtd_vagas')} vaga(s)",
+        "Características": f"{dados.get('qtd_quartos')} | {dados.get('qtd_vagas')}",
         "Situação Atual": dados.get("situacao_imovel"),
         "Localização das Chaves": dados.get("chaves_local")
     }
@@ -191,6 +191,10 @@ def gerar_pdf_ficha_proprietario(dados: dict) -> bytes:
     elements.append(Spacer(1, 8))
 
     # 4. Dados Bancários para Repasse Financeiro
+    chave_pix_str = ""
+    if dados.get("chave_pix"):
+        chave_pix_str = f"{dados.get('chave_pix')} ({dados.get('tipo_chave_pix')})"
+
     sec4 = {
         "Banco": dados["banco"],
         "Agência": dados["agencia"],
@@ -198,7 +202,7 @@ def gerar_pdf_ficha_proprietario(dados: dict) -> bytes:
         "Tipo de Conta": dados["tipo_conta"],
         "Nome do Titular da Conta": dados["titular_conta"],
         "CPF/CNPJ do Titular da Conta": dados["cpf_cnpj_conta"],
-        "Chave PIX": dados.get("chave_pix")
+        "Chave PIX": chave_pix_str
     }
     elements.append(Paragraph("4. Dados Bancários para Repasse Financeiro", style_section))
     elements.append(montar_tabela(sec4))
@@ -336,7 +340,12 @@ with col_b2:
     tipo_conta = st.selectbox("Tipo de Conta *", ["Conta Corrente", "Conta Poupança", "Conta Pagamento / Digital"])
     titular_conta = st.text_input("Nome do Titular da Conta *", placeholder="Nome completo ou Razão Social")
     cpf_cnpj_conta = st.text_input("CPF ou CNPJ do Titular da Conta *", placeholder="000.000.000-00 ou 00.000.000/0001-00")
-    chave_pix = st.text_input("Chave PIX (opcional)", placeholder="CPF/CNPJ, E-mail, Celular ou Aleatória")
+
+col_b3, col_b4 = st.columns(2)
+with col_b3:
+    tipo_chave_pix = st.selectbox("Tipo de Chave PIX", ["Nenhuma / Não informar", "CPF/CNPJ", "Celular", "E-mail", "Chave Aleatória / Outra"])
+with col_b4:
+    chave_pix = st.text_input("Chave PIX", placeholder="Digite a chave PIX escolhida...")
 
 # 4. Envio de Documentos
 st.markdown("---")
@@ -348,6 +357,9 @@ doc_matricula = st.file_uploader("2. Certidão de Matrícula Atualizada do Imóv
 doc_comprovante_res = st.file_uploader("3. Comprovante de Residência Atual do Proprietário *", accept_multiple_files=True)
 doc_iptu = st.file_uploader("4. Cópia do Espelho do IPTU *", accept_multiple_files=True)
 doc_condominio = st.file_uploader("5. Último Boleto do Condomínio", accept_multiple_files=True)
+doc_luz = st.file_uploader("6. Última Conta de Luz (Energia)", accept_multiple_files=True)
+doc_agua = st.file_uploader("7. Última Conta de Água", accept_multiple_files=True)
+doc_gas = st.file_uploader("8. Última Conta de Gás", accept_multiple_files=True)
 
 observacoes = st.text_area("Observações Adicionais")
 aceito = st.checkbox("Declaro que sou o legítimo proprietário ou representante legal do imóvel e autorizo a captação pela MRC Imóveis. *")
@@ -407,7 +419,8 @@ if btn_enviar:
                     "finalidade_captacao": finalidade_captacao, "endereco_imovel": endereco_imovel, "valor_aluguel": valor_aluguel, "valor_venda": valor_venda,
                     "valor_condominio": valor_condominio, "valor_iptu": valor_iptu, "matricula_rgi": matricula_rgi, "inscricao_iptu": inscricao_iptu,
                     "area_m2": area_m2, "qtd_quartos": qtd_quartos, "qtd_vagas": qtd_vagas, "situacao_imovel": situacao_imovel, "chaves_local": chaves_local,
-                    "banco": banco, "agencia": agencia, "conta": conta, "tipo_conta": tipo_conta, "titular_conta": titular_conta, "cpf_cnpj_conta": cpf_cnpj_conta, "chave_pix": chave_pix,
+                    "banco": banco, "agencia": agencia, "conta": conta, "tipo_conta": tipo_conta, "titular_conta": titular_conta, "cpf_cnpj_conta": cpf_cnpj_conta, 
+                    "tipo_chave_pix": tipo_chave_pix, "chave_pix": chave_pix,
                     "observacoes": observacoes
                 }
 
@@ -462,6 +475,9 @@ if btn_enviar:
                 anexar_uploads(doc_comprovante_res, "ENDERECO_PROPRIETARIO")
                 anexar_uploads(doc_iptu, "IPTU")
                 anexar_uploads(doc_condominio, "CONDOMINIO")
+                anexar_uploads(doc_luz, "CONTA_LUZ")
+                anexar_uploads(doc_agua, "CONTA_AGUA")
+                anexar_uploads(doc_gas, "CONTA_GAS")
 
                 server = smtplib.SMTP(smtp_server, smtp_port)
                 server.starttls()
