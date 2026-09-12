@@ -352,10 +352,24 @@ st.markdown("---")
 st.subheader("4. Envio de Documentos (Anexos)")
 st.info("Formatos aceitos: PDF, JPG, PNG. Você pode selecionar múltiplos arquivos em cada campo.")
 
-doc_id = st.file_uploader("1. Documento de Identificação do Proprietário / Sócios (RG/CPF/CNH ou Contrato Social) *", accept_multiple_files=True)
-doc_matricula = st.file_uploader("2. Certidão de Matrícula Atualizada do Imóvel (RGI) *", accept_multiple_files=True)
-doc_comprovante_res = st.file_uploader("3. Comprovante de Residência Atual do Proprietário *", accept_multiple_files=True)
-doc_iptu = st.file_uploader("4. Cópia do Espelho do IPTU *", accept_multiple_files=True)
+doc_id = None
+doc_contrato = None
+doc_cnpj = None
+
+# DOCUMENTOS DE IDENTIFICAÇÃO CONDICIONAIS (PF vs PJ)
+if tipo_pessoa == "Pessoa Física":
+    doc_id = st.file_uploader("1. Documento de Identificação do Proprietário (e Cônjuge, se houver) *", accept_multiple_files=True)
+else:
+    doc_id = st.file_uploader("1. Documento de Identificação do Sócio-Administrador (RG/CPF ou CNH) *", accept_multiple_files=True)
+    doc_contrato = st.file_uploader("1.1. Contrato Social / Requerimento de Empresário (Consolidado) *", accept_multiple_files=True)
+    doc_cnpj = st.file_uploader("1.2. Cartão do CNPJ da Empresa *", accept_multiple_files=True)
+
+# DEMAIS DOCUMENTOS DO IMÓVEL (Matrícula e IPTU não bloqueiam envio)
+doc_matricula = st.file_uploader("2. Certidão de Matrícula Atualizada do Imóvel (RGI)", accept_multiple_files=True)
+doc_comprovante_res = st.file_uploader("3. Comprovante de Residência Atual / Sede do Proprietário *", accept_multiple_files=True)
+doc_iptu = st.file_uploader("4. Cópia do Espelho do IPTU", accept_multiple_files=True)
+
+# DOCUMENTOS COMPLEMENTARES
 doc_condominio = st.file_uploader("5. Último Boleto do Condomínio", accept_multiple_files=True)
 doc_luz = st.file_uploader("6. Última Conta de Luz (Energia)", accept_multiple_files=True)
 doc_agua = st.file_uploader("7. Última Conta de Água", accept_multiple_files=True)
@@ -384,9 +398,13 @@ if btn_enviar:
     socio_cpf = formatar_cpf(socio_cpf_raw) if socio_cpf_raw else ""
 
     erros = []
+    
+    # Validações de Aceite e Campos de Texto
     if not aceito:
         erros.append("Você precisa marcar a caixa de declaração autorizando a captação.")
-    if not nome_completo or not cpf_cnpj_raw or not email_contato or not celular_raw or not endereco_titular or not endereco_imovel or not matricula_rgi:
+    
+    # Inscrição IPTU adicionada na validação
+    if not nome_completo or not cpf_cnpj_raw or not email_contato or not celular_raw or not endereco_titular or not endereco_imovel or not matricula_rgi or not inscricao_iptu:
         erros.append("Preencha todos os campos obrigatórios (*) da identificação e do imóvel.")
 
     if tipo_pessoa == "Pessoa Física":
@@ -402,6 +420,19 @@ if btn_enviar:
 
     if not banco or not agencia or not conta or not titular_conta or not cpf_cnpj_conta:
         erros.append("Preencha todos os dados bancários obrigatórios para o repasse financeiro.")
+
+    # Validações de Documentos Obrigatórios (Anexos)
+    if not doc_id:
+        erros.append("Anexe o Documento de Identificação (RG/CPF ou CNH).")
+    
+    if tipo_pessoa == "Pessoa Jurídica":
+        if not doc_contrato:
+            erros.append("Anexe o Contrato Social consolidado da empresa.")
+        if not doc_cnpj:
+            erros.append("Anexe o Cartão CNPJ da empresa.")
+
+    if not doc_comprovante_res:
+        erros.append("Anexe o Comprovante de Residência/Sede.")
 
     if erros:
         for err in erros:
@@ -448,7 +479,7 @@ if btn_enviar:
                         <p><strong>Endereço do Imóvel:</strong> {endereco_imovel}</p>
                         <p><strong>E-mail:</strong> {email_contato} | <strong>Telefone:</strong> {celular}</p>
                         <hr style="border: 0; border-top: 1px solid #E2E8F0; margin: 20px 0;">
-                        <p style="color: #6C757D; font-size: 0.9em;">📌 <strong>A Ficha do Proprietário completa e os dados bancários estão anexados em PDF (Ficha_Proprietario.pdf) com os documentos do imóvel.</strong></p>
+                        <p style="color: #6C757D; font-size: 0.9em;">📌 <strong>A Ficha do Proprietário completa e os dados bancários estão anexados em PDF com os documentos do imóvel.</strong></p>
                     </div>
                 </body>
                 </html>
@@ -471,6 +502,10 @@ if btn_enviar:
                             msg.attach(part)
 
                 anexar_uploads(doc_id, "IDENTIFICACAO")
+                if tipo_pessoa == "Pessoa Jurídica":
+                    anexar_uploads(doc_contrato, "CONTRATO_SOCIAL")
+                    anexar_uploads(doc_cnpj, "CARTAO_CNPJ")
+                
                 anexar_uploads(doc_matricula, "MATRICULA_RGI")
                 anexar_uploads(doc_comprovante_res, "ENDERECO_PROPRIETARIO")
                 anexar_uploads(doc_iptu, "IPTU")
