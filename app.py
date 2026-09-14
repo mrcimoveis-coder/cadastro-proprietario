@@ -102,30 +102,27 @@ SCOPES = [
 ]
 
 def salvar_lead_carteira_sheets(dados_lead: list):
+    credenciais_dict = dict(st.secrets["gcp_service_account"])
+    if "private_key" in credenciais_dict:
+        credenciais_dict["private_key"] = credenciais_dict["private_key"].replace("\\n", "\n")
+    
+    credentials = Credentials.from_service_account_info(credenciais_dict, scopes=SCOPES)
+    client = gspread.authorize(credentials)
+    
+    spreadsheet = client.open_by_key("1yJBZZ0nDnJKsf31H6sfG_vve19TJIRfGIZ4ATCKQS7k")
+    
     try:
-        credenciais_dict = dict(st.secrets["gcp_service_account"])
-        if "private_key" in credenciais_dict:
-            credenciais_dict["private_key"] = credenciais_dict["private_key"].replace("\\n", "\n")
+        sheet_leads = spreadsheet.worksheet("Leads_Captacao")
+    except Exception:
+        sheet_leads = spreadsheet.add_worksheet(title="Leads_Captacao", rows="200", cols="20")
+        header = [
+            "Data_Registro", "Proprietario_Nome", "Proprietario_Telefone", "Proprietario_Email",
+            "Endereco_Imovel", "Bairro", "Tipo_Imovel", "Finalidade", "Valor_Pretendido",
+            "Valor_Condominio", "Valor_IPTU", "Status", "Chaves_Local", "Observacoes"
+        ]
+        sheet_leads.append_row(header)
         
-        credentials = Credentials.from_service_account_info(credenciais_dict, scopes=SCOPES)
-        client = gspread.authorize(credentials)
-        
-        spreadsheet = client.open_by_key("1yJBZZ0nDnJKsf31H6sfG_vve19TJIRfGIZ4ATCKQS7k")
-        
-        try:
-            sheet_leads = spreadsheet.worksheet("Leads_Captacao")
-        except Exception:
-            sheet_leads = spreadsheet.add_worksheet(title="Leads_Captacao", rows="200", cols="20")
-            header = [
-                "Data_Registro", "Proprietario_Nome", "Proprietario_Telefone", "Proprietario_Email",
-                "Endereco_Imovel", "Bairro", "Tipo_Imovel", "Finalidade", "Valor_Pretendido",
-                "Valor_Condominio", "Valor_IPTU", "Status", "Chaves_Local", "Observacoes"
-            ]
-            sheet_leads.append_row(header)
-            
-        sheet_leads.append_row(dados_lead)
-    except Exception as e:
-        st.warning(f"⚠️ E-mail enviado com sucesso, mas ocorreu uma falha ao salvar na triagem: {e}")
+    sheet_leads.append_row(dados_lead)
 
 # -----------------------------------------------------------------------------
 # GERADOR DE PDF DA FICHA CADASTRAL DO PROPRIETÁRIO
@@ -550,6 +547,8 @@ if btn_enviar:
                     chaves_local,
                     f"Situação: {situacao_imovel} | Obs: {observacoes}"
                 ]
+                
+                # Executa o salvamento direto na triagem da Carteira
                 salvar_lead_carteira_sheets(linha_lead_carteira)
 
                 # 2. GERAR PDF E ENVIAR POR E-MAIL
