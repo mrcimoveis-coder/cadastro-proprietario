@@ -461,11 +461,11 @@ if btn_enviar:
                 smtp_port = st.secrets["smtp"]["port"]
                 sender_email = st.secrets["smtp"]["email"]
                 sender_password = st.secrets["smtp"]["password"]
-                receiver_email = "aluguel@mrcimoveis.com.br"
+                receiver_emails = ["aluguel@mrcimoveis.com.br", "comercial@mrcimoveis.com.br"]
 
                 msg = MIMEMultipart()
                 msg['From'] = sender_email
-                msg['To'] = receiver_email
+                msg['To'] = ", ".join(receiver_emails)
                 msg['Subject'] = f"NOVA CAPTAÇÃO PROPRIETÁRIO [{tipo_pessoa.upper()}] - {nome_completo}"
 
                 html_body = f"""
@@ -517,7 +517,7 @@ if btn_enviar:
                 server = smtplib.SMTP(smtp_server, smtp_port)
                 server.starttls()
                 server.login(sender_email, sender_password)
-                server.sendmail(sender_email, receiver_email, msg.as_string())
+                server.sendmail(sender_email, receiver_emails, msg.as_string())
                 server.quit()
 
                 st.success("✅ Ficha do Proprietário enviada com sucesso para a MRC Imóveis!")
