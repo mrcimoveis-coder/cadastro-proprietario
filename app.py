@@ -7,7 +7,11 @@ import io
 import re
 import unicodedata
 import urllib.request
+from datetime import datetime
 import streamlit as st
+
+import gspread
+from google.oauth2.service_account import Credentials
 
 # ReportLab para geração do PDF
 from reportlab.lib.pagesizes import A4
@@ -84,11 +88,44 @@ def formatar_moeda(val: str) -> str:
         return val
 
 def sanitizar_nome_arquivo(nome):
-    """Higieniza nomes de arquivos para impedir rejeição do Gmail (evita 'noname')"""
     n = unicodedata.normalize('NFKD', str(nome)).encode('ASCII', 'ignore').decode('utf-8')
     n = re.sub(r'[^a-zA-Z0-9.]', '_', n)
     n = re.sub(r'\.+', '.', n)
     return re.sub(r'_+', '_', n).strip('_')
+
+# -----------------------------------------------------------------------------
+# INTEGRAÇÃO GOOGLE SHEETS COM A CARTEIRA DE IMÓVEIS
+# -----------------------------------------------------------------------------
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+
+def salvar_lead_carteira_sheets(dados_lead: list):
+    try:
+        credenciais_dict = dict(st.secrets["gcp_service_account"])
+        if "private_key" in credenciais_dict:
+            credenciais_dict["private_key"] = credenciais_dict["private_key"].replace("\\n", "\n")
+        
+        credentials = Credentials.from_service_account_info(credenciais_dict, scopes=SCOPES)
+        client = gspread.authorize(credentials)
+        
+        spreadsheet = client.open_by_key("1yJBZZ0nDnJKsf31H6sfG_vve19TJIRfGIZ4ATCKQS7k")
+        
+        try:
+            sheet_leads = spreadsheet.worksheet("Leads_Captacao")
+        except Exception:
+            sheet_leads = spreadsheet.add_worksheet(title="Leads_Captacao", rows="200", cols="20")
+            header = [
+                "Data_Registro", "Proprietario_Nome", "Proprietario_Telefone", "Proprietario_Email",
+                "Endereco_Imovel", "Bairro", "Tipo_Imovel", "Finalidade", "Valor_Pretendido",
+                "Valor_Condominio", "Valor_IPTU", "Status", "Chaves_Local", "Observacoes"
+            ]
+            sheet_leads.append_row(header)
+            
+        sheet_leads.append_row(dados_lead)
+    except Exception as e:
+        st.warning(f"⚠️ E-mail enviado com sucesso, mas ocorreu uma falha ao salvar na triagem: {e}")
 
 # -----------------------------------------------------------------------------
 # GERADOR DE PDF DA FICHA CADASTRAL DO PROPRIETÁRIO
@@ -166,7 +203,7 @@ def gerar_pdf_ficha_proprietario(dados: dict) -> bytes:
     elements.append(montar_tabela(sec1))
     elements.append(Spacer(1, 8))
 
-    # 2. Cônjuge (se PF e casado/união)
+    # 2. Cônjuge
     if dados.get("conj_nome"):
         sec2 = {
             "Nome do Cônjuge": dados["conj_nome"],
@@ -179,7 +216,7 @@ def gerar_pdf_ficha_proprietario(dados: dict) -> bytes:
         elements.append(montar_tabela(sec2))
         elements.append(Spacer(1, 8))
 
-    # 3. Dados do Imóvel a Captação
+    # 3. Dados do Imóvel
     sec3 = {
         "Finalidade da Captação": dados["finalidade_captacao"],
         "Endereço do Imóvel": dados["endereco_imovel"],
@@ -198,7 +235,7 @@ def gerar_pdf_ficha_proprietario(dados: dict) -> bytes:
     elements.append(montar_tabela(sec3))
     elements.append(Spacer(1, 8))
 
-    # 4. Dados Bancários para Repasse Financeiro
+    # 4. Dados Bancários
     chave_pix_str = ""
     if dados.get("chave_pix"):
         chave_pix_str = f"{dados.get('chave_pix')} ({dados.get('tipo_chave_pix')})"
@@ -233,7 +270,6 @@ def gerar_pdf_ficha_proprietario(dados: dict) -> bytes:
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="Ficha Cadastral do Proprietário | MRC Imóveis", page_icon="🔑", layout="centered")
 
-# ESTADO DE ENVIO COM SUCESSO (TELA DE AGRADECIMENTO)
 if "enviado_sucesso" not in st.session_state:
     st.session_state.enviado_sucesso = False
 
@@ -390,36 +426,30 @@ with col_b4:
 # 4. Envio de Documentos
 st.markdown("---")
 st.subheader("4. Envio de Documentos (Anexos)")
-
-st.warning("⚠️ **Atenção para enviar vários arquivos:** Para colocar mais de um arquivo no mesmo campo, você deve **selecionar todos eles de uma só vez** na janela que abrir. Se você anexar um e depois clicar no botão para anexar o segundo, o primeiro será substituído.")
-
-st.info("Formatos aceitos: PDF, JPG, PNG.")
+st.warning("⚠️ **Atenção para enviar vários arquivos:** Selecione todos de uma só vez.")
 
 doc_id = None
 doc_contrato = None
 doc_cnpj = None
 
-# DOCUMENTOS DE IDENTIFICAÇÃO CONDICIONAIS (PF vs PJ)
 if tipo_pessoa == "Pessoa Física":
-    doc_id = st.file_uploader("1. Documento de Identificação do Proprietário (e Cônjuge, se houver) *", accept_multiple_files=True)
+    doc_id = st.file_uploader("1. Documento de Identificação do Proprietário (e Cônjuge) *", accept_multiple_files=True)
 else:
-    doc_id = st.file_uploader("1. Documento de Identificação do Sócio-Administrador (RG/CPF ou CNH) *", accept_multiple_files=True)
-    doc_contrato = st.file_uploader("1.1. Contrato Social / Requerimento de Empresário (Consolidado) *", accept_multiple_files=True)
+    doc_id = st.file_uploader("1. Documento de Identificação do Sócio-Administrador *", accept_multiple_files=True)
+    doc_contrato = st.file_uploader("1.1. Contrato Social / Requerimento de Empresário *", accept_multiple_files=True)
     doc_cnpj = st.file_uploader("1.2. Cartão do CNPJ da Empresa *", accept_multiple_files=True)
 
-# DEMAIS DOCUMENTOS DO IMÓVEL (Matrícula e IPTU não bloqueiam envio)
 doc_matricula = st.file_uploader("2. Certidão de Matrícula Atualizada do Imóvel (RGI)", accept_multiple_files=True)
-doc_comprovante_res = st.file_uploader("3. Comprovante de Residência Atual / Sede do Proprietário *", accept_multiple_files=True)
+doc_comprovante_res = st.file_uploader("3. Comprovante de Residência Atual / Sede *", accept_multiple_files=True)
 doc_iptu = st.file_uploader("4. Cópia do Espelho do IPTU", accept_multiple_files=True)
 
-# DOCUMENTOS COMPLEMENTARES
 doc_condominio = st.file_uploader("5. Último Boleto do Condomínio", accept_multiple_files=True)
-doc_luz = st.file_uploader("6. Última Conta de Luz (Energia)", accept_multiple_files=True)
+doc_luz = st.file_uploader("6. Última Conta de Luz", accept_multiple_files=True)
 doc_agua = st.file_uploader("7. Última Conta de Água", accept_multiple_files=True)
 doc_gas = st.file_uploader("8. Última Conta de Gás", accept_multiple_files=True)
 
 observacoes = st.text_area("Observações Adicionais")
-aceito = st.checkbox("Declaro que sou o legítimo proprietário ou representante legal do imóvel e autorizo a captação pela MRC Imóveis. *")
+aceito = st.checkbox("Declaro que sou o legítimo proprietário ou representante legal e autorizo a captação pela MRC Imóveis. *")
 
 btn_enviar = st.button("🚀 Enviar Ficha do Proprietário", type="primary", use_container_width=True)
 
@@ -478,7 +508,7 @@ if btn_enviar:
         for err in erros:
             st.error(f"⚠️ {err}")
     else:
-        with st.spinner("Gerando Ficha do Proprietário em PDF e enviando e-mail... Aguarde..."):
+        with st.spinner("Gerando Ficha, salvando na Carteira e enviando e-mail... Aguarde..."):
             try:
                 dados_form = {
                     "tipo_pessoa": tipo_pessoa, "nome_completo": nome_completo, "nome_fantasia": nome_fantasia if tipo_pessoa == "Pessoa Jurídica" else "",
@@ -495,6 +525,34 @@ if btn_enviar:
                     "observacoes": observacoes
                 }
 
+                # 1. SALVAR AUTOMATICAMENTE NA PLANILHA DE TRIAGEM DA CARTEIRA
+                val_pretendido_str = ""
+                if valor_aluguel and valor_venda:
+                    val_pretendido_str = f"Aluguel: {valor_aluguel} | Venda: {valor_venda}"
+                elif valor_aluguel:
+                    val_pretendido_str = valor_aluguel
+                elif valor_venda:
+                    val_pretendido_str = valor_venda
+
+                linha_lead_carteira = [
+                    datetime.now().strftime("%d/%m/%Y %H:%M"),
+                    nome_completo,
+                    celular,
+                    email_contato,
+                    endereco_imovel,
+                    "A definir",
+                    "Apartamento",
+                    finalidade_captacao,
+                    val_pretendido_str,
+                    valor_condominio,
+                    valor_iptu,
+                    "Novo Lead",
+                    chaves_local,
+                    f"Situação: {situacao_imovel} | Obs: {observacoes}"
+                ]
+                salvar_lead_carteira_sheets(linha_lead_carteira)
+
+                # 2. GERAR PDF E ENVIAR POR E-MAIL
                 pdf_bytes = gerar_pdf_ficha_proprietario(dados_form)
 
                 smtp_server = st.secrets["smtp"]["server"]
@@ -519,7 +577,7 @@ if btn_enviar:
                         <p><strong>Endereço do Imóvel:</strong> {endereco_imovel}</p>
                         <p><strong>E-mail:</strong> {email_contato} | <strong>Telefone:</strong> {celular}</p>
                         <hr style="border: 0; border-top: 1px solid #E2E8F0; margin: 20px 0;">
-                        <p style="color: #6C757D; font-size: 0.9em;">📌 <strong>A Ficha do Proprietário completa e os dados bancários estão anexados em PDF com os documentos do imóvel.</strong></p>
+                        <p style="color: #6C757D; font-size: 0.9em;">📌 <strong>Este imóvel foi cadastrado automaticamente na aba de Triagem da Carteira de Imóveis.</strong></p>
                     </div>
                 </body>
                 </html>
@@ -540,7 +598,6 @@ if btn_enviar:
                             file_bytes = upload.read()
                             if not file_bytes:
                                 continue
-                            
                             nome_seguro = sanitizar_nome_arquivo(upload.name)
                             nome_final = f"{categoria}_{nome_seguro}"
                             
@@ -569,7 +626,6 @@ if btn_enviar:
                 server.sendmail(sender_email, receiver_emails, msg.as_string())
                 server.quit()
 
-                # REDIRECIONA PARA A TELA DE AGRADECIMENTO
                 st.session_state.enviado_sucesso = True
                 st.rerun()
 
