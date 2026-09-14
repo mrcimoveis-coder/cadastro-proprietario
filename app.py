@@ -115,11 +115,16 @@ def salvar_lead_carteira_sheets(dados_lead: list):
         sheet_leads = spreadsheet.worksheet("Leads_Captacao")
     except Exception:
         sheet_leads = spreadsheet.add_worksheet(title="Leads_Captacao", rows="200", cols="20")
-        header = [
-            "Data_Registro", "Proprietario_Nome", "Proprietario_Telefone", "Proprietario_Email",
-            "Endereco_Imovel", "Bairro", "Tipo_Imovel", "Finalidade", "Valor_Pretendido",
-            "Valor_Condominio", "Valor_IPTU", "Status", "Chaves_Local", "Observacoes"
-        ]
+        
+    header = [
+        "Data_Registro", "Proprietario_Nome", "Proprietario_Telefone", "Proprietario_Email",
+        "Endereco_Imovel", "Bairro", "Tipo_Imovel", "Finalidade", "Valor_Pretendido",
+        "Valor_Condominio", "Valor_IPTU", "Status", "Chaves_Local", "Observacoes"
+    ]
+    
+    # Garante que a linha 1 seja sempre o cabeçalho oficial
+    valores_existentes = sheet_leads.get_all_values()
+    if not valores_existentes:
         sheet_leads.append_row(header)
         
     sheet_leads.append_row(dados_lead)
@@ -548,7 +553,6 @@ if btn_enviar:
                     f"Situação: {situacao_imovel} | Obs: {observacoes}"
                 ]
                 
-                # Executa o salvamento direto na triagem da Carteira
                 salvar_lead_carteira_sheets(linha_lead_carteira)
 
                 # 2. GERAR PDF E ENVIAR POR E-MAIL
