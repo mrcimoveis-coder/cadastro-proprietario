@@ -86,8 +86,8 @@ def formatar_moeda(val: str) -> str:
 def sanitizar_nome_arquivo(nome):
     """Higieniza nomes de arquivos para impedir rejeição do Gmail (evita 'noname')"""
     n = unicodedata.normalize('NFKD', str(nome)).encode('ASCII', 'ignore').decode('utf-8')
-    n = re.sub(r'[^a-zA-Z0-9.]', '_', n)  # Substitui acentos, espaços e caracteres especiais por _
-    n = re.sub(r'\.+', '.', n)            # Transforma múltiplos pontos (...) em apenas um (.)
+    n = re.sub(r'[^a-zA-Z0-9.]', '_', n)
+    n = re.sub(r'\.+', '.', n)
     return re.sub(r'_+', '_', n).strip('_')
 
 # -----------------------------------------------------------------------------
@@ -233,6 +233,38 @@ def gerar_pdf_ficha_proprietario(dados: dict) -> bytes:
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="Ficha Cadastral do Proprietário | MRC Imóveis", page_icon="🔑", layout="centered")
 
+# ESTADO DE ENVIO COM SUCESSO (TELA DE AGRADECIMENTO)
+if "enviado_sucesso" not in st.session_state:
+    st.session_state.enviado_sucesso = False
+
+if st.session_state.enviado_sucesso:
+    st.balloons()
+    try:
+        st.image("https://raw.githubusercontent.com/mrcimoveis-coder/intranet/main/logo.jpeg", width=260)
+    except Exception:
+        pass
+    
+    st.success("✅ **Ficha do Proprietário e Documentos Enviados com Sucesso!**")
+    st.markdown("""
+    ### Obrigado por disponibilizar seu imóvel com a **MRC Imóveis**! 🎉
+    
+    Sua ficha cadastral e os documentos do imóvel foram encaminhados com sucesso para o nosso setor comercial e de captação.
+    
+    **O que acontece agora?**
+    * Nossa equipe analisará os dados do imóvel e a documentação enviada.
+    * Um de nossos gestores entrará em contato em breve para dar início à divulgação e agendamento de fotos/visitas.
+    
+    ---
+    📬 **Contatos Úteis:**
+    * **E-mail:** aluguel@mrcimoveis.com.br / comercial@mrcimoveis.com.br
+    """)
+    st.markdown("---")
+    if st.button("🔄 Cadastrar outro imóvel"):
+        st.session_state.enviado_sucesso = False
+        st.rerun()
+    st.stop()
+
+# FORMULÁRIO PADRÃO
 try:
     st.image("https://raw.githubusercontent.com/mrcimoveis-coder/intranet/main/logo.jpeg", width=260)
 except Exception:
@@ -410,11 +442,9 @@ if btn_enviar:
 
     erros = []
     
-    # Validações de Aceite e Campos de Texto
     if not aceito:
         erros.append("Você precisa marcar a caixa de declaração autorizando a captação.")
     
-    # Inscrição IPTU adicionada na validação
     if not nome_completo or not cpf_cnpj_raw or not email_contato or not celular_raw or not endereco_titular or not endereco_imovel or not matricula_rgi or not inscricao_iptu:
         erros.append("Preencha todos os campos obrigatórios (*) da identificação e do imóvel.")
 
@@ -432,7 +462,6 @@ if btn_enviar:
     if not banco or not agencia or not conta or not titular_conta or not cpf_cnpj_conta:
         erros.append("Preencha todos os dados bancários obrigatórios para o repasse financeiro.")
 
-    # Validações de Documentos Obrigatórios (Anexos)
     if not doc_id:
         erros.append("Anexe o Documento de Identificação (RG/CPF ou CNH).")
     
@@ -540,7 +569,9 @@ if btn_enviar:
                 server.sendmail(sender_email, receiver_emails, msg.as_string())
                 server.quit()
 
-                st.success("✅ Ficha do Proprietário enviada com sucesso para a MRC Imóveis!")
-                st.balloons()
+                # REDIRECIONA PARA A TELA DE AGRADECIMENTO
+                st.session_state.enviado_sucesso = True
+                st.rerun()
+
             except Exception as e:
                 st.error(f"❌ Erro ao processar o envio: {e}")
