@@ -9,6 +9,9 @@ import unicodedata
 import urllib.request
 from datetime import datetime
 import streamlit as st
+import streamlit.components.v1 as components
+from PIL import Image as PILImage, ImageChops
+from xml.sax.saxutils import escape
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -18,6 +21,23 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+LOGO_URL = "https://raw.githubusercontent.com/mrcimoveis-coder/portal-intranet/main/logo.jpeg"
+
+@st.cache_data(ttl=3600)
+def obter_logo_bytes():
+    """Baixa e recorta as margens brancas da identidade visual atual da MRC."""
+    logo_data = urllib.request.urlopen(LOGO_URL, timeout=10).read()
+    with PILImage.open(io.BytesIO(logo_data)).convert("RGB") as imagem:
+        fundo = PILImage.new("RGB", imagem.size, "white")
+        diferenca = ImageChops.difference(imagem, fundo).convert("L")
+        limite = diferenca.point(lambda pixel: 255 if pixel > 12 else 0)
+        caixa = limite.getbbox()
+        if caixa:
+            imagem = imagem.crop(caixa)
+        saida = io.BytesIO()
+        imagem.save(saida, format="PNG", optimize=True)
+        return saida.getvalue()
 
 # -----------------------------------------------------------------------------
 # FUNÇÕES AUXILIARES DE VALIDAÇÃO E FORMATAÇÃO
@@ -93,6 +113,51 @@ def sanitizar_nome_arquivo(nome):
     n = re.sub(r'\.+', '.', n)
     return re.sub(r'_+', '_', n).strip('_')
 
+def ativar_sincronizacao_autopreenchimento():
+    """Faz o Streamlit reconhecer valores escolhidos no autofill do navegador."""
+    components.html(
+        """
+        <script>
+        (() => {
+          const host = window.parent;
+          const doc = host.document;
+          if (host.__mrcAutofillSyncInstalled) return;
+          host.__mrcAutofillSyncInstalled = true;
+
+          const style = doc.createElement("style");
+          style.textContent = `
+            @keyframes mrcAutofillStarted { from {} to {} }
+            input:-webkit-autofill { animation-name: mrcAutofillStarted; animation-duration: 0.01s; }
+          `;
+          doc.head.appendChild(style);
+
+          const sincronizar = (input) => {
+            if (!input || !input.value) return;
+            const valor = input.value;
+            if (input.dataset.mrcAutofillSincronizado === valor) return;
+            input.dataset.mrcAutofillSincronizado = valor;
+            const tracker = input._valueTracker;
+            if (tracker) tracker.setValue("");
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+          };
+
+          doc.addEventListener("animationstart", (event) => {
+            if (event.animationName === "mrcAutofillStarted") {
+              host.setTimeout(() => sincronizar(event.target), 50);
+            }
+          }, true);
+
+          host.setInterval(() => {
+            doc.querySelectorAll("input:-webkit-autofill").forEach(sincronizar);
+          }, 500);
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
 # -----------------------------------------------------------------------------
 # INTEGRAÇÃO GOOGLE SHEETS COM A CARTEIRA DE IMÓVEIS
 # -----------------------------------------------------------------------------
@@ -145,8 +210,7 @@ def gerar_pdf_ficha_proprietario(dados: dict) -> bytes:
     elements = []
 
     try:
-        logo_url = "https://raw.githubusercontent.com/mrcimoveis-coder/intranet/main/logo.jpeg"
-        logo_data = urllib.request.urlopen(logo_url).read()
+        logo_data = obter_logo_bytes()
         elements.append(Image(io.BytesIO(logo_data), width=140, height=48, hAlign='LEFT'))
         elements.append(Spacer(1, 8))
     except Exception:
@@ -218,7 +282,7 @@ def gerar_pdf_ficha_proprietario(dados: dict) -> bytes:
         elements.append(montar_tabela(sec2))
         elements.append(Spacer(1, 8))
 
-    # 3. Dados do Imóvel
+    # 2. Dados do Imóvel
     sec3 = {
         "Finalidade da Captação": dados["finalidade_captacao"],
         "Endereço do Imóvel": dados["endereco_imovel"],
@@ -233,11 +297,11 @@ def gerar_pdf_ficha_proprietario(dados: dict) -> bytes:
         "Situação Atual": dados.get("situacao_imovel"),
         "Localização das Chaves": dados.get("chaves_local")
     }
-    elements.append(Paragraph("3. Informações do Imóvel Captado", style_section))
+    elements.append(Paragraph("2. Informações do Imóvel Captado", style_section))
     elements.append(montar_tabela(sec3))
     elements.append(Spacer(1, 8))
 
-    # 4. Dados Bancários
+    # 3. Dados Bancários
     chave_pix_str = ""
     if dados.get("chave_pix"):
         chave_pix_str = f"{dados.get('chave_pix')} ({dados.get('tipo_chave_pix')})"
@@ -251,9 +315,22 @@ def gerar_pdf_ficha_proprietario(dados: dict) -> bytes:
         "CPF/CNPJ do Titular da Conta": dados["cpf_cnpj_conta"],
         "Chave PIX": chave_pix_str
     }
-    elements.append(Paragraph("4. Dados Bancários para Repasse Financeiro", style_section))
+    elements.append(Paragraph("3. Dados Bancários para Repasse Financeiro", style_section))
     elements.append(montar_tabela(sec4))
     elements.append(Spacer(1, 8))
+
+    # 4. Condições comerciais da venda (somente quando houver venda)
+    if "Venda" in dados["finalidade_captacao"]:
+        prazo_exclusividade = dados.get("prazo_exclusividade") if dados.get("exclusividade_mrc") == "Sim" else "Não se aplica"
+        sec_venda = {
+            "Exclusividade para a MRC": dados.get("exclusividade_mrc"),
+            "Prazo de Exclusividade (dias)": prazo_exclusividade,
+            "Percentual de Venda Acordado": dados.get("percentual_venda"),
+            "Corretor Responsável pela Captação": dados.get("corretor_captacao"),
+        }
+        elements.append(Paragraph("4. Condições Comerciais da Venda", style_section))
+        elements.append(montar_tabela(sec_venda))
+        elements.append(Spacer(1, 8))
 
     # 5. Observações
     sec5 = {
@@ -266,11 +343,156 @@ def gerar_pdf_ficha_proprietario(dados: dict) -> bytes:
     buffer.seek(0)
     return buffer.getvalue()
 
+def gerar_pdf_autorizacao_venda(dados: dict) -> bytes:
+    """Gera a autorização de venda preenchida para assinatura do proprietário."""
+    buffer = io.BytesIO()
+    vermelho = colors.HexColor("#C90018")
+    azul_escuro = colors.HexColor("#17233C")
+    cinza = colors.HexColor("#5F6773")
+    cinza_claro = colors.HexColor("#F3F5F8")
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=34,
+        leftMargin=34,
+        topMargin=28,
+        bottomMargin=32,
+    )
+
+    style_logo = ParagraphStyle("AuthLogo", alignment=1, spaceAfter=2)
+    style_title = ParagraphStyle(
+        "AuthTitle", fontName="Helvetica-Bold", fontSize=18, leading=21,
+        alignment=1, textColor=azul_escuro, spaceAfter=9,
+    )
+    style_body = ParagraphStyle(
+        "AuthBody", fontName="Helvetica", fontSize=8.4, leading=10.7,
+        textColor=colors.HexColor("#2D3440"), alignment=4,
+    )
+    style_small = ParagraphStyle(
+        "AuthSmall", parent=style_body, fontSize=7.3, leading=9.1,
+    )
+    style_section = ParagraphStyle(
+        "AuthSection", fontName="Helvetica-Bold", fontSize=10.2, leading=12,
+        alignment=1, textColor=azul_escuro, spaceBefore=7, spaceAfter=5,
+    )
+    style_label = ParagraphStyle(
+        "AuthLabel", parent=style_body, fontName="Helvetica-Bold", fontSize=8.1,
+        textColor=azul_escuro,
+    )
+
+    def texto(valor):
+        return escape(str(valor or ""))
+
+    def decorar_pagina(canvas, _doc):
+        largura, altura = A4
+        canvas.saveState()
+        canvas.setFillColor(vermelho)
+        canvas.rect(0, altura - 12, largura, 12, stroke=0, fill=1)
+        canvas.rect(0, 0, largura, 10, stroke=0, fill=1)
+        canvas.setFillColor(cinza)
+        canvas.setFont("Helvetica", 6.8)
+        canvas.drawCentredString(
+            largura / 2,
+            16,
+            "MRC EMPREENDIMENTOS IMOBILIARIOS E PARTICIPACOES LTDA - CRECI 18.046/DF",
+        )
+        canvas.restoreState()
+
+    elements = []
+    try:
+        logo = Image(io.BytesIO(obter_logo_bytes()), width=160, height=50, hAlign="CENTER")
+        elements.append(logo)
+    except Exception:
+        elements.append(Paragraph("<b>MRC IMÓVEIS</b>", style_logo))
+
+    elements.append(Paragraph("AUTORIZAÇÃO DE VENDA", style_title))
+    elements.append(HRFlowable(width="100%", thickness=2.2, color=vermelho, spaceAfter=8))
+    elements.append(Paragraph(
+        "Autorizo a <b>MRC Empreendimentos Imobiliários e Participações Ltda.</b>, "
+        "CRECI 18.046/DF, CNPJ 04.184.638/0001-80, com escritório na EQRSW 07/08, "
+        "Lote 01, Sala 01, Ed. Monumental Sudoeste, Brasília (DF), a promover a venda "
+        "do imóvel abaixo especificado:",
+        style_body,
+    ))
+    elements.append(Spacer(1, 7))
+
+    exclusividade = texto(dados.get("exclusividade_mrc"))
+    prazo = texto(dados.get("prazo_exclusividade")) if dados.get("exclusividade_mrc") == "Sim" else "Não se aplica"
+    dados_imovel = [
+        [Paragraph("ENDEREÇO", style_label), Paragraph(texto(dados.get("endereco_imovel")), style_body)],
+        [Paragraph("REGISTRO / MATRÍCULA", style_label), Paragraph(texto(dados.get("matricula_rgi")), style_body)],
+        [Paragraph("VALOR DA VENDA", style_label), Paragraph(texto(dados.get("valor_venda")), style_body)],
+        [Paragraph("COMISSÃO DE VENDA", style_label), Paragraph(texto(dados.get("percentual_venda")), style_body)],
+        [Paragraph("EXCLUSIVIDADE MRC", style_label), Paragraph(exclusividade, style_body)],
+        [Paragraph("PRAZO DE EXCLUSIVIDADE", style_label), Paragraph(f"{prazo} dias" if prazo != "Não se aplica" else prazo, style_body)],
+        [Paragraph("CORRETOR RESPONSÁVEL", style_label), Paragraph(texto(dados.get("corretor_captacao")), style_body)],
+    ]
+    tabela_imovel = Table(dados_imovel, colWidths=[150, 377])
+    tabela_imovel.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), cinza_claro),
+        ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#D9DEE7")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#D9DEE7")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    elements.append(tabela_imovel)
+
+    elements.append(Paragraph("CONDIÇÕES GERAIS", style_section))
+    condicoes = [
+        "Na venda à vista, a comissão de venda será paga no ato do pagamento integral do valor.",
+        "Na venda a prazo, a comissão de venda será paga integralmente no sinal do negócio, desde que o comprador pague no mínimo 10% do valor total da venda.",
+        "Caso o proprietário aceite imóvel como forma de pagamento, a comissão será devida da mesma forma e nos valores combinados.",
+        "Será devida a comissão à imobiliária se o imóvel for vendido, durante a validade desta autorização, a pessoa que o tenha visitado acompanhada por corretor ou profissional da MRC.",
+        "Os custos de publicidade e propaganda dos anúncios contratados pela imobiliária serão de responsabilidade da MRC.",
+        "Esta autorização é válida por 90 (noventa) dias. Quando houver exclusividade, prevalecerá o prazo específico informado acima. A autorização poderá ser renovada por iguais períodos, salvo manifestação escrita do proprietário.",
+        "A presente autorização pode ser denunciada a qualquer tempo, respeitadas as condições e os negócios já iniciados durante sua vigência.",
+        "A imobiliária não está autorizada a receber sinal nem a assinar documentos de venda em nome do proprietário, salvo mediante procuração específica.",
+        "As visitas deverão ser previamente agendadas com o proprietário e acompanhadas por corretor ou profissional da MRC.",
+    ]
+    for indice, condicao in enumerate(condicoes, start=1):
+        elements.append(Paragraph(f"<b>{indice}.</b> {condicao}", style_small))
+        elements.append(Spacer(1, 1.5))
+
+    elements.append(Paragraph("PROPRIETÁRIO DO IMÓVEL", style_section))
+    dados_proprietario = [
+        [Paragraph("NOME / RAZÃO SOCIAL", style_label), Paragraph(texto(dados.get("nome_completo")), style_body)],
+        [Paragraph("CPF / CNPJ", style_label), Paragraph(texto(dados.get("cpf_cnpj")), style_body)],
+        [Paragraph("TELEFONE", style_label), Paragraph(texto(dados.get("celular")), style_body)],
+        [Paragraph("E-MAIL", style_label), Paragraph(texto(dados.get("email_contato")), style_body)],
+    ]
+    tabela_proprietario = Table(dados_proprietario, colWidths=[150, 377])
+    tabela_proprietario.setStyle(TableStyle([
+        ("LINEBELOW", (0, 0), (-1, -1), 0.45, colors.HexColor("#C6CCD6")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+    ]))
+    elements.append(tabela_proprietario)
+    elements.append(Spacer(1, 7))
+    elements.append(Paragraph("Brasília (DF), ______ de ________________________ de __________.", style_section))
+    elements.append(Spacer(1, 16))
+    assinatura = Table([
+        ["______________________________________________"],
+        [Paragraph("<b>ASSINATURA DO PROPRIETÁRIO</b>", style_section)],
+    ], colWidths=[330], hAlign="CENTER")
+    assinatura.setStyle(TableStyle([("ALIGN", (0, 0), (-1, -1), "CENTER")]))
+    elements.append(assinatura)
+
+    doc.build(elements, onFirstPage=decorar_pagina, onLaterPages=decorar_pagina)
+    buffer.seek(0)
+    return buffer.getvalue()
+
 
 # -----------------------------------------------------------------------------
 # INTERFACE STREAMLIT
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="Ficha Cadastral do Proprietário | MRC Imóveis", page_icon="🔑", layout="centered")
+ativar_sincronizacao_autopreenchimento()
 
 if "enviado_sucesso" not in st.session_state:
     st.session_state.enviado_sucesso = False
@@ -278,7 +500,7 @@ if "enviado_sucesso" not in st.session_state:
 if st.session_state.enviado_sucesso:
     st.balloons()
     try:
-        st.image("https://raw.githubusercontent.com/mrcimoveis-coder/intranet/main/logo.jpeg", width=260)
+        st.image(obter_logo_bytes(), width=260)
     except Exception:
         pass
     
@@ -304,7 +526,7 @@ if st.session_state.enviado_sucesso:
 
 # FORMULÁRIO PADRÃO
 try:
-    st.image("https://raw.githubusercontent.com/mrcimoveis-coder/intranet/main/logo.jpeg", width=260)
+    st.image(obter_logo_bytes(), width=260)
 except Exception:
     pass
 
@@ -425,9 +647,35 @@ with col_b3:
 with col_b4:
     chave_pix = st.text_input("Chave PIX", placeholder="Digite a chave PIX escolhida...")
 
-# 4. Envio de Documentos
+# 4. Condições comerciais da venda
+exclusividade_mrc, prazo_exclusividade, percentual_venda, corretor_captacao = "", "", "", ""
+if "Venda" in finalidade_captacao:
+    st.markdown("---")
+    st.subheader("4. Condições Comerciais da Venda")
+    exclusividade_mrc = st.radio(
+        "O imóvel está sendo dado com exclusividade para a MRC? *",
+        ["Sim", "Não"],
+        horizontal=True,
+        index=None,
+    )
+    if exclusividade_mrc == "Sim":
+        prazo_exclusividade = st.text_input(
+            "Prazo de exclusividade (em dias) *",
+            placeholder="Ex: 90",
+        )
+    percentual_venda = st.text_input(
+        "Percentual de venda acordado *",
+        placeholder="Ex: 5%",
+    )
+    corretor_captacao = st.text_input(
+        "Corretor responsável pela captação *",
+        placeholder="Nome do corretor",
+    )
+
+# 5. Envio de Documentos
 st.markdown("---")
-st.subheader("4. Envio de Documentos (Anexos)")
+st.subheader("5. Envio de Documentos (Anexos Opcionais)")
+st.info("Os anexos não são obrigatórios. Estes campos aceitam PDF, JPG, JPEG, PNG, arquivos do Word, Excel e outros formatos de documentos.")
 st.warning("⚠️ **Atenção para enviar vários arquivos:** Selecione todos de uma só vez.")
 
 doc_id = None
@@ -435,20 +683,21 @@ doc_contrato = None
 doc_cnpj = None
 
 if tipo_pessoa == "Pessoa Física":
-    doc_id = st.file_uploader("1. Documento de Identificação do Proprietário (e Cônjuge) *", accept_multiple_files=True)
+    doc_id = st.file_uploader("1. Documento de Identificação do Proprietário (e Cônjuge)", accept_multiple_files=True)
 else:
-    doc_id = st.file_uploader("1. Documento de Identificação do Sócio-Administrador *", accept_multiple_files=True)
-    doc_contrato = st.file_uploader("1.1. Contrato Social / Requerimento de Empresário *", accept_multiple_files=True)
-    doc_cnpj = st.file_uploader("1.2. Cartão do CNPJ da Empresa *", accept_multiple_files=True)
+    doc_id = st.file_uploader("1. Documento de Identificação do Sócio-Administrador", accept_multiple_files=True)
+    doc_contrato = st.file_uploader("1.1. Contrato Social / Requerimento de Empresário", accept_multiple_files=True)
+    doc_cnpj = st.file_uploader("1.2. Cartão do CNPJ da Empresa", accept_multiple_files=True)
 
 doc_matricula = st.file_uploader("2. Certidão de Matrícula Atualizada do Imóvel (RGI)", accept_multiple_files=True)
-doc_comprovante_res = st.file_uploader("3. Comprovante de Residência Atual / Sede *", accept_multiple_files=True)
+doc_comprovante_res = st.file_uploader("3. Comprovante de Residência Atual / Sede", accept_multiple_files=True)
 doc_iptu = st.file_uploader("4. Cópia do Espelho do IPTU", accept_multiple_files=True)
 
 doc_condominio = st.file_uploader("5. Último Boleto do Condomínio", accept_multiple_files=True)
 doc_luz = st.file_uploader("6. Última Conta de Luz", accept_multiple_files=True)
 doc_agua = st.file_uploader("7. Última Conta de Água", accept_multiple_files=True)
 doc_gas = st.file_uploader("8. Última Conta de Gás", accept_multiple_files=True)
+doc_outros = st.file_uploader("9. Outros documentos", accept_multiple_files=True)
 
 observacoes = st.text_area("Observações Adicionais")
 aceito = st.checkbox("Declaro que sou o legítimo proprietário ou representante legal e autorizo a captação pela MRC Imóveis. *")
@@ -494,17 +743,15 @@ if btn_enviar:
     if not banco or not agencia or not conta or not titular_conta or not cpf_cnpj_conta:
         erros.append("Preencha todos os dados bancários obrigatórios para o repasse financeiro.")
 
-    if not doc_id:
-        erros.append("Anexe o Documento de Identificação (RG/CPF ou CNH).")
-    
-    if tipo_pessoa == "Pessoa Jurídica":
-        if not doc_contrato:
-            erros.append("Anexe o Contrato Social consolidado da empresa.")
-        if not doc_cnpj:
-            erros.append("Anexe o Cartão CNPJ da empresa.")
-
-    if not doc_comprovante_res:
-        erros.append("Anexe o Comprovante de Residência/Sede.")
+    if "Venda" in finalidade_captacao:
+        if not exclusividade_mrc:
+            erros.append("Informe se o imóvel será trabalhado com exclusividade pela MRC.")
+        if exclusividade_mrc == "Sim" and not prazo_exclusividade.strip():
+            erros.append("Informe o prazo da exclusividade em dias.")
+        if not percentual_venda.strip():
+            erros.append("Informe o percentual de venda acordado.")
+        if not corretor_captacao.strip():
+            erros.append("Informe o corretor responsável pela captação.")
 
     if erros:
         for err in erros:
@@ -524,6 +771,8 @@ if btn_enviar:
                     "area_m2": area_m2, "qtd_quartos": qtd_quartos, "qtd_vagas": qtd_vagas, "situacao_imovel": situacao_imovel, "chaves_local": chaves_local,
                     "banco": banco, "agencia": agencia, "conta": conta, "tipo_conta": tipo_conta, "titular_conta": titular_conta, "cpf_cnpj_conta": cpf_cnpj_conta, 
                     "tipo_chave_pix": tipo_chave_pix, "chave_pix": chave_pix,
+                    "exclusividade_mrc": exclusividade_mrc, "prazo_exclusividade": prazo_exclusividade,
+                    "percentual_venda": percentual_venda, "corretor_captacao": corretor_captacao,
                     "observacoes": observacoes
                 }
 
@@ -550,13 +799,20 @@ if btn_enviar:
                     valor_iptu,
                     "Novo Lead",
                     chaves_local,
-                    f"Situação: {situacao_imovel} | Obs: {observacoes}"
+                    (
+                        f"Situação: {situacao_imovel} | Exclusividade MRC: {exclusividade_mrc or 'Não se aplica'}"
+                        f" | Prazo: {prazo_exclusividade or 'Não se aplica'} | Percentual venda: {percentual_venda or 'Não se aplica'}"
+                        f" | Corretor: {corretor_captacao or 'Não se aplica'} | Obs: {observacoes}"
+                    )
                 ]
                 
                 salvar_lead_carteira_sheets(linha_lead_carteira)
 
                 # 2. GERAR PDF E ENVIAR POR E-MAIL
                 pdf_bytes = gerar_pdf_ficha_proprietario(dados_form)
+                autorizacao_venda_bytes = None
+                if "Venda" in finalidade_captacao:
+                    autorizacao_venda_bytes = gerar_pdf_autorizacao_venda(dados_form)
 
                 smtp_server = st.secrets["smtp"]["server"]
                 smtp_port = st.secrets["smtp"]["port"]
@@ -578,9 +834,11 @@ if btn_enviar:
                         <p><strong>Tipo:</strong> {tipo_pessoa}</p>
                         <p><strong>Finalidade:</strong> {finalidade_captacao}</p>
                         <p><strong>Endereço do Imóvel:</strong> {endereco_imovel}</p>
+                        {f'<p><strong>Exclusividade MRC:</strong> {exclusividade_mrc} {f"— {prazo_exclusividade} dias" if exclusividade_mrc == "Sim" else ""}</p><p><strong>Percentual de venda:</strong> {percentual_venda}</p><p><strong>Corretor responsável:</strong> {corretor_captacao}</p>' if "Venda" in finalidade_captacao else ''}
                         <p><strong>E-mail:</strong> {email_contato} | <strong>Telefone:</strong> {celular}</p>
                         <hr style="border: 0; border-top: 1px solid #E2E8F0; margin: 20px 0;">
                         <p style="color: #6C757D; font-size: 0.9em;">📌 <strong>Este imóvel foi cadastrado automaticamente na aba de Triagem da Carteira de Imóveis.</strong></p>
+                        {f'<p style="color: #6C757D; font-size: 0.9em;">📎 <strong>A Autorização de Venda preenchida segue anexa e também foi enviada ao proprietário para assinatura.</strong></p>' if autorizacao_venda_bytes else ''}
                     </div>
                 </body>
                 </html>
@@ -593,6 +851,15 @@ if btn_enviar:
                 nome_pdf_seguro = sanitizar_nome_arquivo(f"Ficha_Proprietario_{nome_completo}.pdf")
                 part_pdf.add_header('Content-Disposition', 'attachment', filename=nome_pdf_seguro)
                 msg.attach(part_pdf)
+
+                nome_autorizacao_seguro = ""
+                if autorizacao_venda_bytes:
+                    nome_autorizacao_seguro = sanitizar_nome_arquivo(f"Autorizacao_de_Venda_{nome_completo}.pdf")
+                    part_autorizacao = MIMEBase('application', 'pdf')
+                    part_autorizacao.set_payload(autorizacao_venda_bytes)
+                    encoders.encode_base64(part_autorizacao)
+                    part_autorizacao.add_header('Content-Disposition', 'attachment', filename=nome_autorizacao_seguro)
+                    msg.attach(part_autorizacao)
 
                 def anexar_uploads(lista_uploads, categoria):
                     if lista_uploads:
@@ -622,11 +889,48 @@ if btn_enviar:
                 anexar_uploads(doc_luz, "CONTA_LUZ")
                 anexar_uploads(doc_agua, "CONTA_AGUA")
                 anexar_uploads(doc_gas, "CONTA_GAS")
+                anexar_uploads(doc_outros, "OUTROS_DOCUMENTOS")
 
                 server = smtplib.SMTP(smtp_server, smtp_port)
                 server.starttls()
                 server.login(sender_email, sender_password)
                 server.sendmail(sender_email, receiver_emails, msg.as_string())
+
+                if autorizacao_venda_bytes:
+                    msg_cliente = MIMEMultipart()
+                    msg_cliente['From'] = sender_email
+                    msg_cliente['To'] = email_contato
+                    msg_cliente['Reply-To'] = "comercial@mrcimoveis.com.br"
+                    msg_cliente['Subject'] = "Autorização de Venda para assinatura - MRC Imóveis"
+                    nome_cliente_html = escape(nome_completo)
+                    corretor_html = escape(corretor_captacao)
+                    html_cliente = f"""
+                    <html>
+                    <body style="font-family: Arial, sans-serif; color: #17233C; background-color: #F3F5F8; padding: 20px;">
+                        <div style="max-width: 650px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; border-top: 5px solid #C90018; padding: 25px;">
+                            <h2 style="color: #C90018; margin-top: 0;">Autorização de Venda - MRC Imóveis</h2>
+                            <p>Olá, <strong>{nome_cliente_html}</strong>.</p>
+                            <p>A Autorização de Venda do imóvel informado em sua ficha cadastral segue preenchida em anexo.</p>
+                            <p><strong>Para concluir:</strong></p>
+                            <ol>
+                                <li>Confira os dados do documento anexo.</li>
+                                <li>Assine eletronicamente pelo <a href="https://www.gov.br/governodigital/pt-br/assinatura-eletronica">portal gov.br</a>.</li>
+                                <li>Envie o documento assinado para <strong>comercial@mrcimoveis.com.br</strong> ou diretamente ao corretor <strong>{corretor_html}</strong>.</li>
+                            </ol>
+                            <p>Em caso de dúvida, responda a este e-mail para falar com a equipe da MRC.</p>
+                            <p style="color: #5F6773; font-size: 0.9em;">Atenciosamente,<br><strong>MRC Imóveis</strong><br>CRECI 18.046/DF</p>
+                        </div>
+                    </body>
+                    </html>
+                    """
+                    msg_cliente.attach(MIMEText(html_cliente, 'html'))
+                    part_cliente = MIMEBase('application', 'pdf')
+                    part_cliente.set_payload(autorizacao_venda_bytes)
+                    encoders.encode_base64(part_cliente)
+                    part_cliente.add_header('Content-Disposition', 'attachment', filename=nome_autorizacao_seguro)
+                    msg_cliente.attach(part_cliente)
+                    server.sendmail(sender_email, [email_contato], msg_cliente.as_string())
+
                 server.quit()
 
                 st.session_state.enviado_sucesso = True
