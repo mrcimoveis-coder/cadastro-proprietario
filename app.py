@@ -136,15 +136,24 @@ def ativar_sincronizacao_autopreenchimento():
             'input:not([type="file"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]), textarea'
           );
 
+          const valoresConfirmados = host.__mrcAutofillValores ??= new Map();
+          const chave = (input) => input.getAttribute("aria-label") || input.name || input.id;
+          const ehAutopreenchido = (input) => input.matches?.(":-webkit-autofill");
+
           const registrar = (input) => {
-            if (input && 'value' in input) input.dataset.mrcUltimoValor = input.value;
+            if (!input || !('value' in input)) return;
+            input.dataset.mrcUltimoValor = input.value;
+            if (!ehAutopreenchido(input)) valoresConfirmados.set(chave(input), input.value);
           };
 
-          const sincronizar = (input) => {
+          const sincronizar = (input, forcar = false) => {
             if (!input || !('value' in input)) return;
             const valor = input.value;
+            if (!valor) { registrar(input); return; }
+            const id = chave(input);
             const anterior = input.dataset.mrcUltimoValor;
-            if (valor === anterior) return;
+            if (!forcar && valor === anterior) return;
+            if (forcar && valoresConfirmados.get(id) === valor) return;
             const tracker = input._valueTracker;
             if (tracker) tracker.setValue(anterior ?? "");
             input.dispatchEvent(new InputEvent("input", {
@@ -155,22 +164,31 @@ def ativar_sincronizacao_autopreenchimento():
             }));
             input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
             registrar(input);
+            valoresConfirmados.set(id, valor);
           };
 
           doc.addEventListener("animationstart", (event) => {
             if (event.animationName === "mrcAutofillStarted") {
-              host.setTimeout(() => sincronizar(event.target), 50);
+              host.setTimeout(() => sincronizar(event.target, true), 50);
             }
           }, true);
 
           doc.addEventListener("input", (event) => registrar(event.target), true);
           doc.addEventListener("change", (event) => registrar(event.target), true);
-          doc.addEventListener("focusin", (event) => registrar(event.target), true);
-          doc.addEventListener("focusout", (event) => sincronizar(event.target), true);
-          doc.addEventListener("click", () => host.setTimeout(() => campos().forEach(sincronizar), 0), true);
+          doc.addEventListener("focusin", (event) => {
+            host.setTimeout(() => {
+              const input = event.target;
+              if (ehAutopreenchido(input)) sincronizar(input, true);
+              else registrar(input);
+            }, 0);
+          }, true);
+          doc.addEventListener("focusout", (event) => sincronizar(event.target, ehAutopreenchido(event.target)), true);
+          doc.addEventListener("click", () => host.setTimeout(() => campos().forEach(
+            (input) => sincronizar(input, ehAutopreenchido(input))
+          ), 50), true);
 
           host.setInterval(() => {
-            campos().forEach(sincronizar);
+            campos().forEach((input) => sincronizar(input, ehAutopreenchido(input)));
           }, 250);
         })();
         </script>
