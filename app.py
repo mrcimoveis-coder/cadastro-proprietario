@@ -137,25 +137,32 @@ def ativar_sincronizacao_autopreenchimento():
           );
 
           const valoresConfirmados = host.__mrcAutofillValores ??= new Map();
+          const valoresAutomaticos = host.__mrcAutofillCapturados ??= new Map();
           const chave = (input) => input.getAttribute("aria-label") || input.name || input.id;
           const ehAutopreenchido = (input) => input.matches?.(":-webkit-autofill");
 
           const registrar = (input) => {
             if (!input || !('value' in input)) return;
             input.dataset.mrcUltimoValor = input.value;
+            if (ehAutopreenchido(input) && input.value) valoresAutomaticos.set(chave(input), input.value);
             if (!ehAutopreenchido(input)) valoresConfirmados.set(chave(input), input.value);
           };
 
-          const sincronizar = (input, forcar = false) => {
+          const sincronizar = (input, forcar = false, reenviar = false) => {
             if (!input || !('value' in input)) return;
             const valor = input.value;
             if (!valor) { registrar(input); return; }
             const id = chave(input);
             const anterior = input.dataset.mrcUltimoValor;
             if (!forcar && valor === anterior) return;
-            if (forcar && valoresConfirmados.get(id) === valor) return;
+            if (forcar && !reenviar && valoresConfirmados.get(id) === valor) return;
             const tracker = input._valueTracker;
             if (tracker) tracker.setValue(anterior ?? "");
+            const setter = Object.getOwnPropertyDescriptor(host.HTMLInputElement.prototype, "value")?.set;
+            if (forcar && setter) {
+              setter.call(input, "");
+              setter.call(input, valor);
+            }
             input.dispatchEvent(new InputEvent("input", {
               bubbles: true,
               composed: true,
@@ -183,9 +190,39 @@ def ativar_sincronizacao_autopreenchimento():
             }, 0);
           }, true);
           doc.addEventListener("focusout", (event) => sincronizar(event.target, ehAutopreenchido(event.target)), true);
-          doc.addEventListener("click", () => host.setTimeout(() => campos().forEach(
-            (input) => sincronizar(input, ehAutopreenchido(input))
-          ), 50), true);
+          const confirmarAutomaticosComoDigitacao = () => {
+            campos().forEach((input) => {
+              if (ehAutopreenchido(input) && input.value) valoresAutomaticos.set(chave(input), input.value);
+            });
+            valoresAutomaticos.forEach((valor, id) => {
+              const input = [...campos()].find((item) => chave(item) === id);
+              if (!input || !valor) return;
+              input.focus({ preventScroll: true });
+              input.setSelectionRange?.(0, input.value.length);
+              if (!doc.execCommand?.("insertText", false, valor)) {
+                const setter = Object.getOwnPropertyDescriptor(host.HTMLInputElement.prototype, "value")?.set;
+                if (setter) setter.call(input, valor);
+                input.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, data: valor }));
+              }
+              input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+            });
+          };
+          doc.addEventListener("click", (event) => {
+            const botao = event.target.closest?.("button");
+            if (!botao || !botao.innerText.includes("Enviar Ficha")) return;
+            if (host.__mrcLiberarEnvio) { host.__mrcLiberarEnvio = false; return; }
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            confirmarAutomaticosComoDigitacao();
+            host.setTimeout(confirmarAutomaticosComoDigitacao, 350);
+            host.setTimeout(() => {
+              const enviar = [...doc.querySelectorAll("button")].find((item) => item.innerText.includes("Enviar Ficha"));
+              if (enviar) { host.__mrcLiberarEnvio = true; enviar.click(); }
+            }, 900);
+          }, true);
+          doc.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") confirmarAutomaticosComoDigitacao();
+          }, true);
 
           host.setInterval(() => {
             campos().forEach((input) => sincronizar(input, ehAutopreenchido(input)));
