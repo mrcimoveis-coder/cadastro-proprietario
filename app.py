@@ -3,6 +3,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
+from email.utils import formataddr
 import io
 import re
 import unicodedata
@@ -114,7 +115,7 @@ def sanitizar_nome_arquivo(nome):
     return re.sub(r'_+', '_', n).strip('_')
 
 def ativar_sincronizacao_autopreenchimento():
-    """Faz o Streamlit reconhecer valores escolhidos no autofill do navegador."""
+    """Sincroniza sugestões/autopreenchimento com os campos do Streamlit."""
     components.html(
         """
         <script>
@@ -131,15 +132,29 @@ def ativar_sincronizacao_autopreenchimento():
           `;
           doc.head.appendChild(style);
 
+          const campos = () => doc.querySelectorAll(
+            'input:not([type="file"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]), textarea'
+          );
+
+          const registrar = (input) => {
+            if (input && 'value' in input) input.dataset.mrcUltimoValor = input.value;
+          };
+
           const sincronizar = (input) => {
-            if (!input || !input.value) return;
+            if (!input || !('value' in input)) return;
             const valor = input.value;
-            if (input.dataset.mrcAutofillSincronizado === valor) return;
-            input.dataset.mrcAutofillSincronizado = valor;
+            const anterior = input.dataset.mrcUltimoValor;
+            if (valor === anterior) return;
             const tracker = input._valueTracker;
-            if (tracker) tracker.setValue("");
-            input.dispatchEvent(new Event("input", { bubbles: true }));
-            input.dispatchEvent(new Event("change", { bubbles: true }));
+            if (tracker) tracker.setValue(anterior ?? "");
+            input.dispatchEvent(new InputEvent("input", {
+              bubbles: true,
+              composed: true,
+              inputType: "insertReplacementText",
+              data: valor,
+            }));
+            input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+            registrar(input);
           };
 
           doc.addEventListener("animationstart", (event) => {
@@ -148,9 +163,15 @@ def ativar_sincronizacao_autopreenchimento():
             }
           }, true);
 
+          doc.addEventListener("input", (event) => registrar(event.target), true);
+          doc.addEventListener("change", (event) => registrar(event.target), true);
+          doc.addEventListener("focusin", (event) => registrar(event.target), true);
+          doc.addEventListener("focusout", (event) => sincronizar(event.target), true);
+          doc.addEventListener("click", () => host.setTimeout(() => campos().forEach(sincronizar), 0), true);
+
           host.setInterval(() => {
-            doc.querySelectorAll("input:-webkit-autofill").forEach(sincronizar);
-          }, 500);
+            campos().forEach(sincronizar);
+          }, 250);
         })();
         </script>
         """,
@@ -818,10 +839,12 @@ if btn_enviar:
                 smtp_port = st.secrets["smtp"]["port"]
                 sender_email = st.secrets["smtp"]["email"]
                 sender_password = st.secrets["smtp"]["password"]
+                sender_name = "MRC Imóveis — Fichas Cadastrais"
+                sender_header = formataddr((sender_name, sender_email))
                 receiver_emails = ["aluguel@mrcimoveis.com.br", "comercial@mrcimoveis.com.br"]
 
                 msg = MIMEMultipart()
-                msg['From'] = sender_email
+                msg['From'] = sender_header
                 msg['To'] = ", ".join(receiver_emails)
                 msg['Subject'] = f"NOVA CAPTAÇÃO PROPRIETÁRIO [{tipo_pessoa.upper()}] - {nome_completo}"
 
@@ -898,7 +921,7 @@ if btn_enviar:
 
                 if autorizacao_venda_bytes:
                     msg_cliente = MIMEMultipart()
-                    msg_cliente['From'] = sender_email
+                    msg_cliente['From'] = sender_header
                     msg_cliente['To'] = email_contato
                     msg_cliente['Reply-To'] = "comercial@mrcimoveis.com.br"
                     msg_cliente['Subject'] = "Autorização de Venda para assinatura - MRC Imóveis"
